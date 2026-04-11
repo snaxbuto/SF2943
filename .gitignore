@@ -3,6 +3,12 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 
+# LaTeX aux files
+*.aux
+*.log
+*.out
+*.toc
+
 # Raw dataset excluded: 130 MB, exceeds GitHub's 100 MB per-file limit.
 # Download from Open Power System Data: https://data.open-power-system-data.org/time_series/
 time_series_60min_singleindex.csv

@@ -1,0 +1,379 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[margin=2.3cm]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{mathtools}
+\usepackage[hidelinks]{hyperref}
+\usepackage{parskip}
+\usepackage{enumitem}
+\usepackage{titlesec}
+
+\titleformat{\section}{\normalfont\large\bfseries}{\thesection}{0.7em}{}
+\titleformat{\subsection}{\normalfont\normalsize\bfseries}{\thesubsection}{0.6em}{}
+
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Var}{\mathrm{Var}}
+\newcommand{\Cov}{\mathrm{Cov}}
+\newcommand{\WN}{\mathrm{WN}}
+\newcommand{\N}{\mathcal{N}}
+\newcommand{\BD}[1]{\textsc{[B\&D~§#1]}}
+
+\title{\vspace{-2.5em}SF2943 Part A --- Method and Mathematics Companion\\
+\large Electricity load forecasting for Swedish bidding zone SE\_3}
+\author{}
+\date{}
+
+\begin{document}
+\maketitle
+\vspace{-2.5em}
+
+\noindent\textbf{Purpose.} This is a reading aid for \texttt{project\_part\_a.ipynb}.
+It collects the mathematics used in the pipeline (clean $\to$ fit $\to$ forecast)
+with citations to Brockwell \& Davis (\emph{Introduction to Time Series and
+Forecasting}, 2nd ed.), the course text. It does \emph{not} reproduce numerical
+results or plots --- those live in the notebook.
+
+\section{Stationarity and the decomposition model}
+
+\subsection*{Weak stationarity \BD{1.4}}
+A time series $\{X_t\}_{t \in \mathbb{Z}}$ is \emph{weakly stationary} if the
+mean function is constant and the covariance depends only on the lag:
+\begin{equation}
+\mu_X(t) = \E[X_t] = \mu, \qquad
+\gamma_X(t, t+h) = \Cov(X_t, X_{t+h}) = \gamma_X(h).
+\label{eq:stationary}
+\end{equation}
+The \emph{autocorrelation function (ACF)} is $\rho_X(h) = \gamma_X(h)/\gamma_X(0)$.
+Stationarity is what makes the ``one realization, many lags'' trick work: sample
+averages along the time axis estimate population quantities. Raw electricity load
+satisfies neither condition --- it has a secular trend, a strong winter/summer
+cycle, a weekday/weekend cycle, and amplitude that grows with the level --- so
+the cleaning stage is devoted to transforming it into something
+$\hat Y_t$ for which stationarity is a defensible assumption.
+
+\subsection*{Classical decomposition \BD{1.5}}
+The course model writes
+\begin{equation}
+X_t = m_t + s_t + Y_t
+\label{eq:decomp}
+\end{equation}
+where $m_t$ is a deterministic trend, $s_t$ is a deterministic seasonal component
+of known period $d$ satisfying $s_{t-d} = s_t$ and
+$\sum_{j=1}^d s_j = 0$ (zero-mean over one period, by convention), and $Y_t$ is
+a zero-mean residual. Electricity load has two periods, so we generalise to
+\begin{equation}
+X_t = m_t + s_t^{(\text{week})} + s_t^{(\text{year})} + Y_t,
+\qquad d_{\text{week}} = 7,\ d_{\text{year}} = 365.
+\end{equation}
+The cleaning procedure estimates $\hat m_t$, $\hat s_t^{(\text{week})}$,
+$\hat s_t^{(\text{year})}$ and returns
+$\hat Y_t = X_t - \hat m_t - \hat s_t^{(\text{week})} - \hat s_t^{(\text{year})}$.
+
+\subsection*{Variance stabilisation: Box--Cox with $\lambda = 0$ \BD{1.5}}
+The amplitude of daily load fluctuations grows with the level (winters are bigger
+in absolute MW than summers). The Box--Cox transform with parameter $\lambda = 0$
+is the natural log,
+\begin{equation}
+X_t \;\longmapsto\; \log X_t,
+\end{equation}
+which turns multiplicative seasonality into additive seasonality --- i.e.\ a form
+that matches~\eqref{eq:decomp} exactly. Applied \emph{first}, before decomposition.
+
+\subsection*{Harmonic regression for $\hat s_t$ \BD{1.3}}
+For period $d$ we model the seasonal component as a truncated Fourier series,
+\begin{equation}
+s_t \;=\; a_0 + \sum_{j=1}^{k}\Bigl[a_j \cos(\lambda_j t) + b_j \sin(\lambda_j t)\Bigr],
+\qquad \lambda_j \;=\; \frac{2\pi j}{d},
+\label{eq:harmonic}
+\end{equation}
+with $k$ the number of harmonics retained. The coefficients $\{a_j, b_j\}$ are
+estimated by ordinary least squares: we form the design matrix
+\begin{equation}
+\mathbf{Z} \;=\; \bigl[\mathbf{1},\ \cos(\lambda_1 t),\ \sin(\lambda_1 t),\ \ldots,\ \cos(\lambda_k t),\ \sin(\lambda_k t)\bigr]
+\end{equation}
+and compute $\hat{\boldsymbol\beta} = (\mathbf{Z}^\top \mathbf{Z})^{-1} \mathbf{Z}^\top \mathbf{y}$.
+This is a linear projection onto a finite-dimensional basis of trigonometric
+polynomials --- the cleanest possible setting for least squares.
+
+\paragraph{Choices for this project.}
+Yearly: $d = 365$, $k = 2$ (fundamental + first harmonic, enough to capture the
+asymmetric winter peak without over-fitting).  Weekly: $d = 7$, $k = 3$
+(three harmonics are enough resolution for the near-rectangular weekday/weekend
+block shape). The estimated coefficients are printed in the notebook and copied
+into the summary file.
+
+\subsection*{Polynomial trend \BD{1.5}}
+After removing the seasonal components we fit the remaining slowly-varying level
+by a low-order polynomial:
+\begin{equation}
+\hat m_t \;=\; \beta_0 + \beta_1 t + \beta_2 t^2 + \cdots,
+\end{equation}
+also by ordinary least squares. Default degree: 1 (linear). The notebook
+escalates to degree 2 (quadratic) only if the linear residuals show visible
+curvature --- concretely, if the mean of any third of the residual series
+exceeds 10\% of the residual standard deviation. This heuristic is a one-line
+stand-in for the visual check B\&D describes.
+
+\subsection*{Differencing: an alternative route \BD{1.5.2}}
+With the backshift operator $B X_t = X_{t-1}$, define the lag-$d$ difference
+\begin{equation}
+\nabla_d X_t \;=\; X_t - X_{t-d} \;=\; (1 - B^d) X_t.
+\end{equation}
+Applied to the decomposition~\eqref{eq:decomp} with $s_t$ of period $d$,
+$$\nabla_d X_t = (m_t - m_{t-d}) + (Y_t - Y_{t-d}),$$
+so the seasonal component is killed exactly. A linear trend is killed by
+$\nabla_1 = 1 - B$, a quadratic trend by $\nabla_1^2$. The project uses classical
+decomposition as the primary route (it yields explicit $\hat m_t$ and $\hat s_t$
+to report) and differencing as a sanity check: the residual ACFs from
+$\hat Y_t$ and from $\nabla_1 \nabla_7 \log X_t$ should tell the same story.
+
+\subsection*{Sample ACF and the $\pm 1.96/\sqrt{n}$ bounds \BD{1.4.1}}
+The sample autocovariance is
+\begin{equation}
+\hat\gamma(h) \;=\; \frac{1}{n} \sum_{t=1}^{n - |h|} (x_{t+|h|} - \bar x)(x_t - \bar x),
+\end{equation}
+and $\hat\rho(h) = \hat\gamma(h)/\hat\gamma(0)$ is the sample ACF. The divisor
+$n$ (rather than $n-h$) is used to keep the sample covariance matrix
+nonnegative definite --- this matters when we later feed $\hat\gamma$ into
+Yule--Walker. For an iid sequence with finite variance,
+\begin{equation}
+\hat\rho(h) \;\overset{\text{approx}}{\sim}\; \N\!\left(0,\ \tfrac{1}{n}\right), \qquad h \neq 0,
+\end{equation}
+so approximately 95\% of the $\hat\rho(h)$ lie inside $\pm 1.96/\sqrt{n}$.
+These are the blue dashed lines drawn on every ACF plot in the notebook. A
+correctly cleaned residual series has a sample ACF that stays mostly inside
+these bounds, with no slow decay (residual trend) and no spikes at period
+multiples (residual seasonality).
+
+\subsection*{Ljung--Box portmanteau test \BD{1.6}}
+The joint statistic
+\begin{equation}
+Q_{\mathrm{LB}} \;=\; n(n+2) \sum_{j=1}^{h} \frac{\hat\rho^2(j)}{n - j}
+\end{equation}
+replaces eyeballing individual $\hat\rho(h)$. Under the null that $\{X_t\}$ is
+iid, $Q_{\mathrm{LB}} \overset{\text{approx}}{\sim} \chi^2(h)$. We report it at
+$h = 20$ and $h = 40$. For the \emph{cleaning} residuals we \emph{expect} iid
+to be rejected --- that is what justifies fitting an ARMA model in the next
+stage. For the \emph{ARMA} residuals (Section~\ref{sec:arma} below) we apply
+a degrees-of-freedom correction, as discussed there.
+
+\section{ARMA identification and estimation}
+\label{sec:arma}
+
+\subsection*{ARMA($p$, $q$) and causality/invertibility \BD{3.1}}
+A causal ARMA($p$, $q$) process satisfies
+\begin{equation}
+\phi(B) X_t \;=\; \theta(B) Z_t, \qquad \{Z_t\} \sim \WN(0, \sigma^2),
+\label{eq:arma}
+\end{equation}
+where
+$\phi(z) = 1 - \phi_1 z - \cdots - \phi_p z^p$ and
+$\theta(z) = 1 + \theta_1 z + \cdots + \theta_q z^q$.
+The process is \emph{causal} if every root of $\phi(z)$ satisfies $|z| > 1$
+(equivalently: $X_t$ is an absolutely convergent one-sided moving average of the
+innovations $\{Z_s : s \leq t\}$), and \emph{invertible} if every root of
+$\theta(z)$ satisfies $|z| > 1$ (equivalently: $Z_t$ can be written as an
+absolutely convergent one-sided function of $\{X_s : s \leq t\}$). Both
+conditions must hold for the estimation and prediction machinery to be
+well-defined; the notebook checks them on every fitted candidate by computing
+the roots of $\hat\phi$ and $\hat\theta$.
+
+\subsection*{Identification from sample ACF and PACF \BD{3.2.3, 6.2}}
+The shapes of $\hat\rho$ and of the sample partial autocorrelation
+$\hat\alpha$ diagnose the order:
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+Process & Sample ACF & Sample PACF \\
+\midrule
+AR$(p)$   & tails off  & \textbf{cuts off after lag $p$} \\
+MA$(q)$   & \textbf{cuts off after lag $q$} & tails off \\
+ARMA$(p,q)$ & tails off & tails off \\
+\bottomrule
+\end{tabular}
+\end{center}
+``Cuts off'' means: drops inside the $\pm 1.96/\sqrt{n}$ bounds and stays there.
+This is the \emph{first-pass} tool for picking $(p, q)$ candidates before any
+numerical optimisation is run. The notebook uses it to select 3--5 candidate
+models, which are then compared by AICC.
+
+\subsection*{Yule--Walker estimation for AR$(p)$ \BD{5.1.1}}
+Multiplying the AR equation $X_t = \phi_1 X_{t-1} + \cdots + \phi_p X_{t-p} + Z_t$
+by $X_{t-j}$ and taking expectations gives, for $j \geq 1$,
+$$\gamma(j) = \phi_1 \gamma(j-1) + \cdots + \phi_p \gamma(j-p),$$
+and evaluating at $j = 1, \ldots, p$ yields the Yule--Walker system
+\begin{equation}
+\Gamma_p \boldsymbol\phi \;=\; \boldsymbol\gamma_p,
+\qquad
+\sigma^2 \;=\; \gamma(0) - \boldsymbol\phi^\top \boldsymbol\gamma_p,
+\label{eq:yw}
+\end{equation}
+where
+$\Gamma_p = [\gamma(i-j)]_{i,j=1}^p$,
+$\boldsymbol\gamma_p = (\gamma(1), \ldots, \gamma(p))^\top$, and
+$\boldsymbol\phi = (\phi_1, \ldots, \phi_p)^\top$.
+The sample version replaces $\gamma$ with $\hat\gamma$:
+\begin{equation}
+\hat{\boldsymbol\phi} \;=\; \hat\Gamma_p^{-1} \hat{\boldsymbol\gamma}_p,
+\qquad
+\hat\sigma^2 \;=\; \hat\gamma(0) - \hat{\boldsymbol\phi}^\top \hat{\boldsymbol\gamma}_p.
+\end{equation}
+Two properties are useful: (i) $\hat\Gamma_p$ is automatically invertible
+because $\hat\gamma$ is built with divisor $n$, guaranteeing nonnegative
+definiteness; (ii) $\hat{\boldsymbol\phi}$ is asymptotically equivalent to MLE
+for AR processes, so Yule--Walker is used in the notebook as a cross-check on
+the MLE for the best AR candidate, not as the primary estimator.
+
+\subsection*{Gaussian MLE via the innovations algorithm \BD{5.2}}
+For models with $q > 0$, Yule--Walker is not enough and we use Gaussian MLE.
+The trick that makes the likelihood computable is the \emph{innovations
+algorithm}: letting $\hat X_j$ denote the one-step predictor of $X_j$ from
+$X_1, \ldots, X_{j-1}$, and $v_{j-1} = \E[(X_j - \hat X_j)^2]$ its mean squared
+error, the \emph{innovations} $U_j = X_j - \hat X_j$ are uncorrelated by
+construction, so the joint Gaussian density factorises:
+\begin{equation}
+L(\phi, \theta, \sigma^2)
+\;=\;
+(2\pi)^{-n/2} \prod_{j=1}^{n} v_{j-1}^{-1/2}
+\exp\!\left\{ -\frac{1}{2} \sum_{j=1}^{n} \frac{U_j^2}{v_{j-1}} \right\}.
+\end{equation}
+Maximising this numerically over $(\phi, \theta, \sigma^2)$ is the Gaussian
+MLE; \texttt{statsmodels.tsa.arima.model.ARIMA} does exactly this under the
+hood. The notebook comments every ARMA fit with a reference to this section.
+
+\subsection*{Order selection: AICC, not AIC \BD{5.5.2}}
+Among candidate models we pick the one minimising
+\begin{equation}
+\mathrm{AICC}
+\;=\;
+-2 \ln L(\hat\phi, \hat\theta, \hat\sigma^2)
++ \frac{2(p + q + 1)\,n}{n - p - q - 2},
+\label{eq:aicc}
+\end{equation}
+where $n$ is the sample size and the ``$+1$'' on $p+q+1$ counts $\sigma^2$.
+Compared to the uncorrected AIC, AICC adds the finite-sample bias term
+\begin{equation}
+\frac{2k(k+1)}{n - k - 1}, \qquad k = p + q + 1,
+\end{equation}
+which disappears as $n \to \infty$ but meaningfully penalises overparameterised
+models in finite samples. This is the only information criterion the course
+uses: AIC underpenalises overfitting in finite samples, and AICC is the
+standard fix. The notebook computes it as
+$\mathrm{AICC} = \mathrm{AIC} + 2k(k+1)/(n-k-1)$ for each candidate.
+
+\subsection*{Ljung--Box on ARMA residuals \BD{5.3}}
+After a model is fit, we recompute the portmanteau statistic on its residuals
+$\hat R_t$ and compare against a $\chi^2$ distribution with \emph{corrected}
+degrees of freedom:
+\begin{equation}
+Q_{\mathrm{LB}}(\hat R)
+\;\overset{\text{approx}}{\sim}\;
+\chi^2\bigl(h - p - q\bigr).
+\end{equation}
+The $p + q$ degrees of freedom are ``spent'' on estimating the ARMA parameters;
+ignoring this correction leads to spuriously conservative $p$-values. The
+notebook passes \texttt{model\_df = p + q} to
+\texttt{statsmodels.stats.diagnostic.acorr\_ljungbox}. If the residual test
+rejects, we either accept the failure and discuss what structure is left, or
+we go back and try a different $(p, q)$ --- we do not paper over it.
+
+\section{Linear prediction and forecasting}
+
+\subsection*{Best linear predictor \BD{2.5}}
+For a zero-mean stationary process and given $X_1, \ldots, X_n$, the best linear
+(i.e.\ minimum mean squared error among linear) predictor of $X_{n+h}$ is
+\begin{equation}
+P_n X_{n+h} \;=\; \boldsymbol\phi_n^\top \mathbf{X}_n
+\;=\; \phi_{n1} X_n + \cdots + \phi_{nn} X_1,
+\end{equation}
+where the coefficients satisfy the prediction equations
+\begin{equation}
+\Gamma_n \boldsymbol\phi_n \;=\; \boldsymbol\gamma_n(h),
+\qquad
+\boldsymbol\gamma_n(h) = (\gamma(h), \gamma(h+1), \ldots, \gamma(h + n - 1))^\top,
+\end{equation}
+with MSE
+\begin{equation}
+v_n(h) \;=\; \E\bigl[(X_{n+h} - P_n X_{n+h})^2\bigr]
+\;=\; \gamma(0) - \boldsymbol\phi_n^\top \boldsymbol\gamma_n(h).
+\end{equation}
+For non-zero-mean series, predict $X_t - \mu$ and add $\mu$ back.
+
+\subsection*{Innovations algorithm for prediction \BD{2.5.4}}
+Rewriting the predictor in terms of innovations
+$U_j = X_j - \hat X_j$ instead of raw observations,
+\begin{equation}
+\hat X_{n+1}
+\;=\;
+\sum_{j=1}^{n} \theta_{nj}\,\bigl(X_{n+1-j} - \hat X_{n+1-j}\bigr),
+\end{equation}
+yields a clean recursion because the innovations are uncorrelated by
+construction --- unlike the $X_j$ themselves, which are highly correlated.
+For MA and ARMA processes this is the natural route; for pure AR the
+Durbin--Levinson recursion \BD{2.5.3} does the same job directly on the
+observations.
+
+\subsection*{$h$-step ARMA forecast \BD{3.3.1}}
+For $n > \max(p, q)$ and $h \geq 1$,
+\begin{equation}
+P_n X_{n+h}
+\;=\;
+\sum_{i=1}^{p} \phi_i\, P_n X_{n+h-i}
+\;+\;
+\sum_{j=h}^{q} \theta_{n+h-1,\, j}\,\bigl(X_{n+h-j} - \hat X_{n+h-j}\bigr).
+\label{eq:hstep}
+\end{equation}
+The second sum vanishes once $h > q$, so long-horizon forecasts follow the AR
+recursion alone and decay geometrically towards the process mean. The
+prediction MSE $v_n(h)$ satisfies
+$$v_n(h) \;\longrightarrow\; \Var(X_t) \quad \text{as } h \to \infty,$$
+reflecting the fact that the forecast carries no information about the distant
+future beyond the unconditional mean. Visually, this is the characteristic
+``point forecast flattens, band widens'' shape on the forecast plot in the
+notebook.
+
+\subsection*{Prediction intervals}
+Under Gaussian innovations, an approximate 95\% prediction interval is
+\begin{equation}
+P_n X_{n+h} \pm 1.96\,\sqrt{v_n(h)}.
+\end{equation}
+In the notebook this interval is computed on the \emph{residual} (log-MW) scale
+and then transformed to MW by adding the extrapolated seasonal and trend
+components and exponentiating. Because $\exp$ is nonlinear, the MW interval is
+asymmetric (log-normal) --- this is noted as an approximation but used as-is,
+since the course does not introduce bias-corrected log-normal intervals.
+
+\section{The pipeline in one page}
+
+Bringing it all together, the notebook executes:
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item $X_t$ (raw hourly MW) $\to$ daily mean (preserves MW units);
+\item $\to$ $\log X_t$ (Box--Cox, $\lambda = 0$, variance stabilisation);
+\item $\to$ subtract harmonic yearly seasonal $\hat s_t^{(\text{year})}$
+      ($d=365$, $k=2$, OLS on~\eqref{eq:harmonic});
+\item $\to$ subtract harmonic weekly seasonal $\hat s_t^{(\text{week})}$
+      ($d=7$, $k=3$);
+\item $\to$ subtract polynomial trend $\hat m_t$ (OLS, degree 1 or 2 by
+      curvature check);
+\item $\to$ residual series $\hat Y_t$ (target: stationary);
+\item $\to$ diagnose via sample ACF, PACF, Ljung--Box~\BD{1.6};
+\item $\to$ identify candidate ARMA$(p, q)$ from ACF/PACF shape~\BD{3.2.3};
+\item $\to$ fit each candidate by Gaussian MLE~\BD{5.2}; verify causality and
+      invertibility; compute AICC~\eqref{eq:aicc}; pick the minimum;
+      cross-check the best AR candidate against Yule--Walker~\eqref{eq:yw};
+\item $\to$ diagnose ARMA residuals via Ljung--Box with
+      $\text{df} = h - p - q$~\BD{5.3};
+\item $\to$ refit chosen ARMA on the training window; compute $h$-step
+      forecast~\eqref{eq:hstep} for $h = 1, \ldots, 30$ and its
+      $v_n(h)$-based 95\% band;
+\item $\to$ invert the cleaning transforms (add trend + seasonals, then
+      $\exp$) to recover MW;
+\item $\to$ report RMSE, MAE, and empirical coverage of the held-out 30-day
+      test window.
+\end{enumerate}
+
+\noindent Each step in the notebook is commented with the corresponding B\&D
+section, so the notebook can be read as an annotated implementation of the
+theory above.
+
+\end{document}

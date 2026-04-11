@@ -1,0 +1,41 @@
+SF2943 Part A — SE_3 summary
+============================================
+Source        : time_series_60min_singleindex.csv
+Column        : SE_3_load_actual_entsoe_transparency
+Date range    : 2015-01-01 to 2020-09-30
+n (daily)     : 2100
+Interpolated  : 5 days
+
+Yearly harmonic (d=365, k=2):
+  a1 = +0.23838
+  b1 = +0.07734
+  a2 = -0.01265
+  b2 = -0.00125
+Weekly harmonic (d=7, k=3):
+  a1 = +0.03232
+  b1 = -0.05356
+  a2 = +0.00962
+  b2 = +0.03041
+  a3 = -0.00860
+  b3 = -0.01065
+Polynomial trend (degree 2):
+  beta0 = +9.160919e+00
+  beta1 = +6.124750e-05
+  beta2 = -3.346407e-08
+
+Candidate ARMA models (AICC sorted):
+  ARMA(2,1)    params=3  AICC=-8083.73  causal=True  invertible=True
+  ARMA(3,0)    params=3  AICC=-8083.68  causal=True  invertible=True
+  ARMA(1,1)    params=2  AICC=-8081.53  causal=True  invertible=True
+  ARMA(2,0)    params=2  AICC=-8075.06  causal=True  invertible=True
+  ARMA(1,0)    params=1  AICC=-8036.14  causal=True  invertible=True
+
+Chosen model  : ARMA(2,1)
+Ljung–Box on ARMA residuals (model_df=3):
+  h=20  Q = 43.722  p = 3.763e-04
+
+Forecast horizon : 30 days
+RMSE             : 187.6 MW
+MAE              : 145.1 MW
+Coverage (95%)   : 1.00
+Training std     : 1936.8 MW

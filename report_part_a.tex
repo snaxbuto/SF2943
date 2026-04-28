@@ -125,8 +125,8 @@ $\mathrm{df}=17$, $p = 4\!\times\!10^{-4}$, so the model fails the residual
 whiteness test. The remaining correlation sits at multiples of 7
 (Figure~\ref{fig:diag}c). This means the harmonic weekly basis catches the
 deterministic weekday \emph{shape} but not the shared noise between same
-weekdays. A SARIMA term at lag 7 would handle this, but it is outside the
-course toolkit, so we report the failure rather than add more parameters.
+weekdays. We report the failure rather than add more parameters at this
+stage.
 
 \section{Forecasting}
 We hold out the last 30 days (2020-09-01 to 2020-09-30) and refit ARMA(2,1)
@@ -152,8 +152,10 @@ mostly the deterministic seasonal and trend part.
 
 \section{Reflection}
 \textbf{Difficulties.} The main problem was the leftover lag-7 correlation in
-$\hat Y_t$, which a low-order ARMA cannot fully remove. SARIMA would fix it
-but is outside the course, so we just report the Ljung--Box failure.
+$\hat Y_t$, which a low-order ARMA cannot fully absorb. The chosen ARMA(2,1)
+still works well for the forecast, but a SARIMA model with a seasonal term at
+lag 7 would be a natural alternative that targets this leftover structure
+directly.
 \textbf{Robustness.} Results are not very sensitive to the model choice:
 ARMA(2,1) and AR(3) give point forecasts that differ by at most 4\,MW per day
 and PI widths by less than 1\%. The biggest forecast errors come from

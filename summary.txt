@@ -1,4 +1,4 @@
-SF2943 Part A â€” SE_3 summary
+SF2943 Part A — SE_3 summary
 ============================================
 Source        : time_series_60min_singleindex.csv
 Column        : SE_3_load_actual_entsoe_transparency
@@ -31,7 +31,7 @@ Candidate ARMA models (AICC sorted):
   ARMA(1,0)    params=1  AICC=-8036.14  causal=True  invertible=True
 
 Chosen model  : ARMA(2,1)
-Ljungâ€“Box on ARMA residuals (model_df=3):
+Ljung–Box on ARMA residuals (model_df=3):
   h=20  Q = 43.722  p = 3.763e-04
 
 Forecast horizon : 30 days

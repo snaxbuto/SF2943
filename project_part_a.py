@@ -613,3 +613,202 @@ summary_text = "\n".join(lines)
 with open("summary.txt", "w") as fh:
     fh.write(summary_text + "\n")
 print(summary_text)
+
+# %% [markdown]
+# ## Section 4 — SARIMA Extension
+#
+# The ARMA(2,1) residuals failed Ljung–Box ($Q(20)=43.7$, $p=4\times10^{-4}$) with surviving
+# autocorrelation at multiples of lag 7.  A SARIMA$(p,0,q)(P,0,Q)_{[7]}$ model augments the
+# ARMA polynomial with seasonal AR/MA factors at the weekly frequency and directly targets this
+# structure, while leaving the cleaning pipeline unchanged.
+
+# %%
+from statsmodels.tsa.statespace.sarimax import SARIMAX
+from statsmodels.graphics.tsaplots import plot_pacf
+from statsmodels.stats.diagnostic import acorr_ljungbox
+
+S = 7
+sarima_candidates = [
+    (2, 1, 1, 0),   # ARMA(2,1) + seasonal AR(1)
+    (2, 1, 0, 1),   # ARMA(2,1) + seasonal MA(1)
+    (2, 1, 1, 1),   # ARMA(2,1) + both seasonal terms
+    (1, 1, 1, 1),   # smaller non-seasonal, both seasonal
+    (2, 1, 2, 0),   # ARMA(2,1) + seasonal AR(2)
+]
+
+
+def fit_sarima(p, q, P, Q, y, s=S):
+    label = f"SARIMA({p},0,{q})({P},0,{Q})[{s}]"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        res = SARIMAX(y, order=(p, 0, q), seasonal_order=(P, 0, Q, s), trend="c").fit(disp=False)
+    n_obs = int(res.nobs)
+    k = p + q + P + Q + 2
+    aicc_val = utils.aicc_from_aic(res.aic, k, n_obs)
+    try:
+        ar_roots = np.atleast_1d(res.arroots)
+    except Exception:
+        ar_roots = np.array([])
+    try:
+        ma_roots = np.atleast_1d(res.maroots)
+    except Exception:
+        ma_roots = np.array([])
+    causal     = bool(np.all(np.abs(ar_roots) > 1)) if len(ar_roots) else True
+    invertible = bool(np.all(np.abs(ma_roots) > 1)) if len(ma_roots) else True
+    return {
+        "label": label, "p": p, "q": q, "P": P, "Q": Q,
+        "result": res, "aic": float(res.aic), "aicc": aicc_val,
+        "sigma2": float(res.params.get("sigma2", np.nan)),
+        "causal": causal, "invertible": invertible,
+        "ar_roots": ar_roots, "ma_roots": ma_roots,
+        "model_df": p + q + P + Q,
+    }
+
+
+sarima_fits = []
+for p, q, P, Q in sarima_candidates:
+    print(f"Fitting SARIMA({p},0,{q})({P},0,{Q})[{S}] ...", end="  ", flush=True)
+    f = fit_sarima(p, q, P, Q, train_resid)
+    sarima_fits.append(f)
+    print(f"AICC = {f['aicc']:.2f}")
+
+# %% [markdown]
+# ### 4.1 AICC comparison and model selection
+
+# %%
+sarima_tbl = pd.DataFrame([
+    {
+        "model":      f["label"],
+        "params":     f["p"] + f["q"] + f["P"] + f["Q"],
+        "AICC":       f["aicc"],
+        "causal":     f["causal"],
+        "invertible": f["invertible"],
+    }
+    for f in sarima_fits
+]).sort_values("AICC").reset_index(drop=True)
+print(sarima_tbl.to_string(index=False))
+
+sarima_eligible = [f for f in sarima_fits if f["causal"] and f["invertible"]]
+sarima_best   = min(sarima_eligible, key=lambda f: f["aicc"])
+sarima_runner = sorted(sarima_eligible, key=lambda f: f["aicc"])[1]
+print(f"\nChosen    : {sarima_best['label']}")
+print(f"Runner-up : {sarima_runner['label']}  (ΔAICC = {sarima_runner['aicc'] - sarima_best['aicc']:+.2f})")
+
+# %% [markdown]
+# ### 4.2 Parameter estimates
+
+# %%
+print(sarima_best["result"].summary().tables[1])
+print(f"\nAR roots   : {np.round(sarima_best['ar_roots'], 3).tolist()}")
+print(f"MA roots   : {np.round(sarima_best['ma_roots'], 3).tolist()}")
+print(f"Causal     : {sarima_best['causal']}")
+print(f"Invertible : {sarima_best['invertible']}")
+
+# %% [markdown]
+# ### 4.3 Residual diagnostics
+
+# %%
+sarima_resid = pd.Series(sarima_best["result"].resid, index=train_resid.index)
+
+fig, axes = plt.subplots(2, 2, figsize=(13, 9))
+
+axes[0, 0].plot(sarima_resid.index, sarima_resid.values, lw=0.5, color="C2")
+axes[0, 0].axhline(0, color="k", lw=0.5)
+axes[0, 0].set_title(f"{sarima_best['label']} residuals")
+axes[0, 0].set_xlabel("date")
+axes[0, 0].set_ylabel("residual")
+
+plot_acf(sarima_resid.values, lags=50, ax=axes[0, 1])
+axes[0, 1].set_title("ACF of SARIMA residuals")
+axes[0, 1].set_xlabel("lag (days)")
+
+plot_pacf(sarima_resid.values, lags=50, ax=axes[1, 0], method="ywm")
+axes[1, 0].set_title("PACF of SARIMA residuals")
+axes[1, 0].set_xlabel("lag (days)")
+
+lb_sarima_all = acorr_ljungbox(
+    sarima_resid.values, lags=range(1, 41),
+    return_df=True, model_df=sarima_best["model_df"]
+)
+axes[1, 1].bar(lb_sarima_all.index, lb_sarima_all["lb_pvalue"], color="C2", alpha=0.7)
+axes[1, 1].axhline(0.05, color="r", lw=1.2, linestyle="--", label="α = 0.05")
+axes[1, 1].set_title("Ljung–Box p-values by lag h")
+axes[1, 1].set_xlabel("lag h")
+axes[1, 1].set_ylabel("p-value")
+axes[1, 1].legend()
+fig.tight_layout()
+plt.show()
+
+for h in (20, 40):
+    lb_h = acorr_ljungbox(
+        sarima_resid.values, lags=[h], return_df=True, model_df=sarima_best["model_df"]
+    )
+    stat = float(lb_h["lb_stat"].iloc[0])
+    pval = float(lb_h["lb_pvalue"].iloc[0])
+    flag = "PASS" if pval >= 0.05 else "FAIL"
+    print(f"Ljung–Box Q({h:2d})  df={h - sarima_best['model_df']}  stat={stat:.2f}  p={pval:.4f}  [{flag}]")
+
+# %% [markdown]
+# ### 4.4 30-day forecast and comparison with ARMA(2,1)
+
+# %%
+sarima_fc      = sarima_best["result"].get_forecast(steps=H)
+sarima_fc_mean = np.asarray(sarima_fc.predicted_mean)
+sarima_fc_ci   = np.asarray(sarima_fc.conf_int(alpha=0.05))
+
+sarima_mw    = np.exp(sarima_fc_mean      + additive_future)
+sarima_mw_lo = np.exp(sarima_fc_ci[:, 0] + additive_future)
+sarima_mw_hi = np.exp(sarima_fc_ci[:, 1] + additive_future)
+
+sarima_rmse = float(np.sqrt(np.mean((sarima_mw - actual) ** 2)))
+sarima_mae  = float(np.mean(np.abs(sarima_mw - actual)))
+sarima_cov  = float(np.mean((actual >= sarima_mw_lo) & (actual <= sarima_mw_hi)))
+
+print(f"\n{'Model':<42} {'RMSE':>8} {'MAE':>8} {'Coverage':>10}")
+print("-" * 70)
+print(f"{'ARMA(2,1) — Part A baseline':<42} {rmse:>8.1f} {mae:>8.1f} {coverage:>10.2f}")
+print(f"{sarima_best['label']:<42} {sarima_rmse:>8.1f} {sarima_mae:>8.1f} {sarima_cov:>10.2f}")
+print(f"\nRMSE improvement : {rmse - sarima_rmse:+.1f} MW  ({100*(rmse - sarima_rmse)/rmse:+.1f}%)")
+print(f"MAE  improvement : {mae  - sarima_mae :+.1f} MW  ({100*(mae  - sarima_mae )/mae :+.1f}%)")
+
+# %%
+fig, axes = plt.subplots(2, 1, figsize=(13, 9), sharex=True)
+for ax in axes:
+    ax.plot(train_daily_mw.iloc[-90:].index, train_daily_mw.iloc[-90:].values,
+            lw=0.8, color="C0", label="training (last 90 d)")
+    ax.plot(test_daily_mw.index, actual, lw=1.0, color="k",
+            marker="o", markersize=3, label="held-out actual")
+
+axes[0].plot(test_daily_mw.index, fc_mw, lw=1.5, color="C3", label="ARMA(2,1) forecast")
+axes[0].fill_between(test_daily_mw.index, fc_mw_lower, fc_mw_upper,
+                     color="C3", alpha=0.2, label="95% PI")
+axes[0].set_title(f"ARMA(2,1) — RMSE={rmse:.1f} MW, MAE={mae:.1f} MW, Coverage={coverage:.2f}")
+axes[0].set_ylabel("load (MW)")
+axes[0].legend(loc="upper left")
+
+axes[1].plot(test_daily_mw.index, sarima_mw, lw=1.5, color="C1",
+             label=f"{sarima_best['label']} forecast")
+axes[1].fill_between(test_daily_mw.index, sarima_mw_lo, sarima_mw_hi,
+                     color="C1", alpha=0.2, label="95% PI")
+axes[1].set_title(
+    f"{sarima_best['label']} — RMSE={sarima_rmse:.1f} MW, "
+    f"MAE={sarima_mae:.1f} MW, Coverage={sarima_cov:.2f}"
+)
+axes[1].set_ylabel("load (MW)")
+axes[1].set_xlabel("date")
+axes[1].legend(loc="upper left")
+fig.tight_layout()
+plt.show()
+
+# %% [markdown]
+# ### 4.5 Save SARIMA forecast
+
+# %%
+pd.DataFrame({
+    "date":        test_daily_mw.index,
+    "forecast_mw": sarima_mw,
+    "lower_95":    sarima_mw_lo,
+    "upper_95":    sarima_mw_hi,
+    "actual_mw":   actual,
+}).to_csv("sarima_forecast.csv", index=False)
+print("Saved: sarima_forecast.csv")
